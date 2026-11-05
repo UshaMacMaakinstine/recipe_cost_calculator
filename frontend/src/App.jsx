@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { UploadCloud, Mail, DollarSign, Calculator, RefreshCw, FileText, CheckCircle2, AlertCircle } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_URL || "";
+const API_BASE = "https://recipe-cost-calculator-wsgw.onrender.com";
 
 // Read token from ?access=KEY in URL, or from local storage
 const urlParams = new URLSearchParams(window.location.search);
@@ -53,7 +53,11 @@ export default function App() {
     formData.append("file", file);
 
     try {
-      const res = await fetch("${API_BASE}/api/extract-recipe", { method: "POST", headers: { "X-App-Access-Key": staffToken }, body: formData });
+      const res = await fetch(`${API_BASE}/api/extract-recipe`, { 
+        method: "POST", 
+        headers: { "X-App-Access-Key": staffToken }, 
+        body: formData 
+      });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       setRecipeName(data.recipe_name || "Custom Recipe");
@@ -80,7 +84,9 @@ export default function App() {
 
   const fetchSavedRecipesList = async () => {
     try {
-      const res = await fetch("${API_BASE}/api/recipes", { headers: { "X-App-Access-Key": staffToken }});
+      const res = await fetch(`${API_BASE}/api/recipes`, { 
+        headers: { "X-App-Access-Key": staffToken }
+      });
       if (res.ok) {
         const data = await res.json();
         setSavedRecipeList(data);
@@ -113,9 +119,12 @@ export default function App() {
         utilities_pct: utilitiesPct,
       };
 
-      const res = await fetch("${API_BASE}/api/recipes/save", {
+      const res = await fetch(`${API_BASE}/api/recipes/save`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "X-App-Access-Key": staffToken },
+        headers: { 
+          "Content-Type": "application/json", 
+          "X-App-Access-Key": staffToken 
+        },
         body: JSON.stringify(payload),
       });
 
@@ -136,8 +145,8 @@ export default function App() {
     setStatusMsg(`Loading "${selectedSavedRecipe}"...`);
     try {
       const res = await fetch(`${API_BASE}/api/recipes/${encodeURIComponent(selectedSavedRecipe)}`, {
-  headers: { "X-App-Access-Key": staffToken }
-});
+        headers: { "X-App-Access-Key": staffToken }
+      });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
 
@@ -164,17 +173,16 @@ export default function App() {
     setLoading(true);
     setStatusMsg("Searching inbox for Munaf Greenvalley invoices...");
     try {
-      const res = await fetch("${API_BASE}/api/emails?limit=10", {
-  headers: { "X-App-Access-Key": staffToken }
-});
+      const res = await fetch(`${API_BASE}/api/emails?limit=10`, {
+        headers: { "X-App-Access-Key": staffToken }
+      });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       setEmailList(data);
       if (data.length > 0) setSelectedEmailId(data[0].id);
       setStatusMsg(`Found ${data.length} emails from inbox!`);
     } catch (err) {
-      const detail = err.response ? await err.response.text() : err.message;
-      setStatusMsg("Email search failed: " + detail);
+      setStatusMsg("Email search failed: " + err.message);
     } finally {
       setLoading(false);
     }
@@ -187,8 +195,8 @@ export default function App() {
     setStatusMsg("Fetching email content...");
     try {
       const res = await fetch(`${API_BASE}/api/emails/${selectedEmailId}`, {
-  headers: { "X-App-Access-Key": staffToken }
-});
+        headers: { "X-App-Access-Key": staffToken }
+      });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       setInvoiceText(data.content);
@@ -205,23 +213,26 @@ export default function App() {
     setLoading(true);
     setStatusMsg("Matching meat from invoice & searching market rates...");
     try {
-    const res = await fetch("${API_BASE}/api/enrich-prices", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ingredients, invoice_text: invoiceText })
-    });
-    if (!res.ok) {
-      const errData = await res.json().catch(() => null);
-      throw new Error(errData?.detail || `HTTP ${res.status}`);
+      const res = await fetch(`${API_BASE}/api/enrich-prices`, {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "X-App-Access-Key": staffToken
+        },
+        body: JSON.stringify({ ingredients, invoice_text: invoiceText })
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => null);
+        throw new Error(errData?.detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      setIngredients(data);
+      setStatusMsg("Ingredient prices updated!");
+    } catch (err) {
+      setStatusMsg("Pricing failed: " + err.message);
+    } finally {
+      setLoading(false);
     }
-    const data = await res.json();
-    setIngredients(data);
-    setStatusMsg("Ingredient prices updated!");
-  } catch (err) {
-    setStatusMsg("Pricing failed: " + err.message);
-  } finally {
-    setLoading(false);
-  }
   };
 
   // Update line item
