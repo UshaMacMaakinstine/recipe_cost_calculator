@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# --- 1. Staff Passcode Security Dependency ---
 def verify_access_token(x_app_access_key: Optional[str] = Header(None)):
     configured_key = os.getenv("APP_SECRET_KEY")
     if not configured_key:
@@ -24,7 +25,11 @@ def verify_access_token(x_app_access_key: Optional[str] = Header(None)):
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid staff access token.")
     return True
 
-app = FastAPI(title="Recipe Cost Calculator API", dependencies=[Depends(verify_access_token)])
+# --- 2. FastAPI Initialization with Dependency Attached ---
+app = FastAPI(
+    title="Recipe Cost Calculator API",
+    dependencies=[Depends(verify_access_token)]
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,6 +39,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- 3. Data Models ---
 class Ingredient(BaseModel):
     name: str
     quantity: float
@@ -68,7 +74,7 @@ class SavedRecipe(BaseModel):
     wastage_pct: Optional[float] = 2.0
     utilities_pct: Optional[float] = 3.0
 
-# ----------------- Persistent Recipe Storage (Disk JSON) -----------------
+# --- 4. Persistent Recipe Storage (Disk JSON) ---
 RECIPES_DB_FILE = "saved_recipes.json"
 
 def read_db() -> dict:
@@ -98,7 +104,6 @@ def save_recipe(recipe: SavedRecipe):
 @app.get("/api/recipes")
 def list_saved_recipes():
     db = read_db()
-    # Returns a list of recipe names and their ingredient counts
     return [{"name": name, "item_count": len(data.get("ingredients", []))} for name, data in db.items()]
 
 @app.get("/api/recipes/{recipe_name}", response_model=SavedRecipe)
@@ -108,10 +113,11 @@ def get_saved_recipe(recipe_name: str):
         raise HTTPException(status_code=404, detail=f"Recipe '{recipe_name}' not found.")
     return db[recipe_name]
 
+# --- 5. Helper Functions & Clients ---
 def get_openai_client():
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is missing from backend/.env")
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is missing from environment.")
     return OpenAI(api_key=api_key)
 
 def get_imap_connection():
@@ -119,12 +125,22 @@ def get_imap_connection():
     user = os.getenv("EMAIL_USER")
     password = os.getenv("EMAIL_PASSWORD")
     if not user or not password:
-        raise HTTPException(status_code=400, detail="EMAIL_USER and EMAIL_PASSWORD must be configured in .env")
+        raise HTTPException(status_code=400, detail="EMAIL_USER and EMAIL_PASSWORD must be configured.")
     mail = imaplib.IMAP4_SSL(host)
     mail.login(user, password)
     return mail
 
-# ----------------- 1. Extract Recipe via OpenAI Vision / Text -----------------
+def convert_to_lbs(quantity: float, unit: str) -> float:
+    u = unit.lower().strip()
+    if u in ["g", "gram", "grams"]:
+        return quantity / 453.59237
+    elif u in ["kg", "kilogram", "kilograms", "kilo", "kilos"]:
+        return quantity * 2.20462
+    elif u in ["oz", "ounce", "ounces"]:
+        return quantity / 16.0
+    return quantity
+
+# --- 6. Recipe Extraction Endpoint ---
 @app.post("/api/extract-recipe", response_model=RecipeExtractionResponse)
 async def extract_recipe(file: UploadFile = File(...)):
     client = get_openai_client()
@@ -143,7 +159,6 @@ async def extract_recipe(file: UploadFile = File(...)):
     )
 
     try:
-        # If image, send via Vision
         if content_type.startswith("image/"):
             b64_image = base64.b64encode(file_bytes).decode("utf-8")
             response = client.chat.completions.create(
@@ -162,7 +177,6 @@ async def extract_recipe(file: UploadFile = File(...)):
                 temperature=0.1
             )
         else:
-            # Fallback for text/markdown recipe documents
             text_content = file_bytes.decode("utf-8", errors="ignore")
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -179,7 +193,7 @@ async def extract_recipe(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OpenAI Recipe Extraction failed: {str(e)}")
 
-# ----------------- 2. Search Inbox for Invoices -----------------
+# --- 7. Email List Endpoint ---
 @app.get("/api/emails", response_model=List[EmailItem])
 def list_supplier_emails(limit: int = 15):
     try:
@@ -229,7 +243,7 @@ def list_supplier_emails(limit: int = 15):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"IMAP Error: {str(e)}")
 
-# ----------------- 3. Fetch Email Body & Parse Excel Attachments -----------------
+# --- 8. Email Fetch & Parse Attachments Endpoint ---
 @app.get("/api/emails/{email_id}")
 def get_email_content(email_id: str):
     try:
@@ -253,7 +267,6 @@ def get_email_content(email_id: str):
                 if ctype == "text/plain" and not filename:
                     body_text += part.get_payload(decode=True).decode(errors="ignore") + "\n"
 
-                # Parse .xlsx or .xls attachments directly with pandas
                 if filename.lower().endswith((".xlsx", ".xls")):
                     payload = part.get_payload(decode=True)
                     try:
@@ -274,108 +287,32 @@ def get_email_content(email_id: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-    # ----------------- 4. Enrich Prices via OpenAI (gpt-4o-mini) -----------------
-    def convert_to_lbs(quantity: float, unit: str) -> float:
-        u = unit.lower().strip()
-        if u in ["g", "gram", "grams"]:
-            return quantity / 453.59237
-        elif u in ["kg", "kilogram", "kilograms", "kilo", "kilos"]:
-            return quantity * 2.20462
-        elif u in ["oz", "ounce", "ounces"]:
-            return quantity / 16.0
-        return quantity
-
-    @app.post("/api/enrich-prices", response_model=List[Ingredient])
-    def enrich_prices(payload: PriceEnrichmentRequest):
-        client = get_openai_client()
-
-        # Standardize all meat ingredients to 'lb' before sending to OpenAI
-        normalized_ingredients = []
-        for item in payload.ingredients:
-            if item.is_meat and item.unit.lower().strip() not in ["lb", "lbs", "pound", "pounds"]:
-                converted_qty = round(convert_to_lbs(item.quantity, item.unit), 3)
-                normalized_ingredients.append(
-                    Ingredient(
-                        name=item.name,
-                        quantity=converted_qty,
-                        unit="lb",
-                        is_meat=True,
-                        unit_price=item.unit_price,
-                        source=item.source
-                    )
-                )
-            else:
-                normalized_ingredients.append(item)
-
-        invoice_snippet = payload.invoice_text[:8000] if payload.invoice_text else "No invoice text provided."
-        compact_ingredients = [
-            {"name": item.name, "quantity": item.quantity, "unit": item.unit, "is_meat": item.is_meat}
-            for item in normalized_ingredients
-        ]
-
-        prompt = f"""
-    You are a wholesale food costing analyst.
-    Supplier invoice data from Green Valley Meat Distributors:
-    \"\"\"{invoice_snippet}\"\"\"
-
-    Ingredients to price:
-    {json.dumps(compact_ingredients)}
-
-    TASK:
-    1. For every ingredient with "is_meat": true:
-    - Ensure the unit remains strictly "lb" (pounds).
-    - Match and extract the price per lb ($/lb) from the Green Valley invoice data (e.g. matching Ground Beef 80/20 to BEEF GROUND 80/20). If not present, assign a realistic wholesale meat benchmark price per lb.
-    2. For non-meat ingredients:
-    - Estimate current benchmark wholesale US grocery market price per specified unit.
-
-    Return a JSON object with an "items" array matching this exact schema:
-    {{
-    "items": [
-        {{
-        "name": "string",
-        "quantity": float,
-        "unit": "string",
-        "is_meat": boolean,
-        "unit_price": float,
-        "source": "Green Valley Meat Attachment" or "Market Search Index"
-        }}
-    ]
-    }}
-    """
-
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": "You are a precise food operations costing engine that only responds in valid raw JSON."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.1
-            )
-
-            data = json.loads(response.choices[0].message.content)
-            items = data.get("items") or data.get("ingredients") or (data if isinstance(data, list) else list(data.values())[0])
-
-            # Enforce that every meat entry has unit set to 'lb'
-            for item in items:
-                if item.get("is_meat"):
-                    item["unit"] = "lb"
-
-            return items
-
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"OpenAI pricing error: {str(e)}")
-
-# ----------------- 5. Enrich Prices via OpenAI (gpt-4o-mini) -----------------
+# --- 9. Price Enrichment Endpoint ---
 @app.post("/api/enrich-prices", response_model=List[Ingredient])
 def enrich_prices(payload: PriceEnrichmentRequest):
     client = get_openai_client()
 
+    normalized_ingredients = []
+    for item in payload.ingredients:
+        if item.is_meat and item.unit.lower().strip() not in ["lb", "lbs", "pound", "pounds"]:
+            converted_qty = round(convert_to_lbs(item.quantity, item.unit), 3)
+            normalized_ingredients.append(
+                Ingredient(
+                    name=item.name,
+                    quantity=converted_qty,
+                    unit="lb",
+                    is_meat=True,
+                    unit_price=item.unit_price,
+                    source=item.source
+                )
+            )
+        else:
+            normalized_ingredients.append(item)
+
     invoice_snippet = payload.invoice_text[:8000] if payload.invoice_text else "No invoice text provided."
     compact_ingredients = [
         {"name": item.name, "quantity": item.quantity, "unit": item.unit, "is_meat": item.is_meat}
-        for item in payload.ingredients
+        for item in normalized_ingredients
     ]
 
     prompt = f"""
@@ -387,8 +324,11 @@ Ingredients to price:
 {json.dumps(compact_ingredients)}
 
 TASK:
-1. For every ingredient with "is_meat": true, search and match the price per unit ($/lb, $/kg) from the Green Valley invoice text above (e.g. matching Ground Beef 80/20 to BEEF GROUND 80/20). If not present, assign realistic wholesale meat price.
-2. For non-meat ingredients, estimate current benchmark wholesale US grocery market price per unit.
+1. For every ingredient with "is_meat": true:
+   - Ensure the unit remains strictly "lb" (pounds).
+   - Match and extract the price per lb ($/lb) from the Green Valley invoice data (e.g. matching Ground Beef 80/20 to BEEF GROUND 80/20). If not present, assign a realistic wholesale meat benchmark price per lb.
+2. For non-meat ingredients:
+   - Estimate current benchmark wholesale US grocery market price per specified unit.
 
 Return a JSON object with an "items" array matching this exact schema:
 {{
@@ -417,13 +357,13 @@ Return a JSON object with an "items" array matching this exact schema:
         )
 
         data = json.loads(response.choices[0].message.content)
-        if "items" in data:
-            return data["items"]
-        if "ingredients" in data:
-            return data["ingredients"]
-        if isinstance(data, list):
-            return data
-        return list(data.values())[0]
+        items = data.get("items") or data.get("ingredients") or (data if isinstance(data, list) else list(data.values())[0])
+
+        for item in items:
+            if item.get("is_meat"):
+                item["unit"] = "lb"
+
+        return items
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OpenAI pricing error: {str(e)}")
