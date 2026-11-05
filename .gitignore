@@ -1,0 +1,34 @@
+# --- Critical Security & Credentials (NEVER upload to Git) ---
+.env
+*.env
+.env.*
+!.env.example
+
+# --- Python & Virtual Environments ---
+venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# --- Node / React / Frontend Builds ---
+frontend/node_modules/
+node_modules/
+frontend/dist/
+dist/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+
+# --- Local Databases & Data Cache ---
+saved_recipes.json
+*.sqlite3
+*.db
+
+# --- OS & Editor Files ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
